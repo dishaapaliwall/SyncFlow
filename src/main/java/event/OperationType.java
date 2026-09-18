@@ -1,4 +1,7 @@
 package event;
 
-public class OperationType {
+public enum OperationType {
+    INSERT,
+    UPDATE,
+    DELETE
 }
