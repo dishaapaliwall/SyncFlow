@@ -1,0 +1,29 @@
+services:
+  source-db:
+    image: postgres:18
+    command: ["postgres", "-c", "wal_level=logical"]
+    container_name: syncflow-source
+    environment:
+      POSTGRES_DB: syncflow_source
+      POSTGRES_USER: syncflow
+      POSTGRES_PASSWORD: syncflow123
+    ports:
+      - "5434:5432"
+    volumes:
+      - source_data:/var/lib/postgresql
+
+  target-db:
+    image: postgres:18
+    container_name: syncflow-target
+    environment:
+      POSTGRES_DB: syncflow_target
+      POSTGRES_USER: syncflow
+      POSTGRES_PASSWORD: syncflow123
+    ports:
+      - "5435:5432"
+    volumes:
+      - target_data:/var/lib/postgresql
+
+volumes:
+  source_data:
+  target_data:
