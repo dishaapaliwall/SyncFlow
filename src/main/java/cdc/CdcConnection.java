@@ -36,11 +36,26 @@ public class CdcConnection {
         Properties properties = new Properties();
         properties.setProperty("user", username);
         properties.setProperty("password", password);
+
+        // PostgreSQL logical replication settings
         properties.setProperty("replication", "database");
+        properties.setProperty("assumeMinServerVersion", "9.4");
+        properties.setProperty("preferQueryMode", "simple");
 
         connection = DriverManager.getConnection(url, properties);
 
         return connection;
+    }
+
+    public PGConnection getPGConnection() throws SQLException {
+
+        if (connection == null || connection.isClosed()) {
+            throw new SQLException(
+                    "CDC connection is not established"
+            );
+        }
+
+        return connection.unwrap(PGConnection.class);
     }
 
     public PGReplicationStream createReplicationStream(
