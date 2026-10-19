@@ -1,0 +1,9 @@
+$kind: http-request
+name: http://localhost:8080/api/sync/stop
+description: ""
+url: http://localhost:8080/api/sync/stop
+method: POST
+body:
+  type: json
+  content: ""
+order: 7000

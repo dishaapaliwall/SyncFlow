@@ -1,9 +1,9 @@
-import cli.ConfigCommand;
-import cli.LagCommand;
-import cli.ProgressCommand;
-import cli.StartCommand;
-import cli.StatusCommand;
-import cli.StopCommand;
+import com.syncflow.cli.ConfigCommand;
+import com.syncflow.cli.LagCommand;
+import com.syncflow.cli.ProgressCommand;
+import com.syncflow.cli.StartCommand;
+import com.syncflow.cli.StatusCommand;
+import com.syncflow.cli.StopCommand;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
