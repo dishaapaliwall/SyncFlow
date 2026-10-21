@@ -4,12 +4,17 @@ import picocli.CommandLine.Command;
 
 @Command(
         name = "stop",
-        description = "Stop SyncFlow CDC process"
+        description = "Stop the CDC replication engine"
 )
 public class StopCommand implements Runnable {
 
+    public StopCommand() {
+    }
+
     @Override
     public void run() {
-        System.out.println("SyncFlow stopped");
+        System.out.println("Sending STOP request to SyncFlow engine...");
+        String response = ApiClient.post("/stop");
+        System.out.println("Response: " + response);
     }
 }

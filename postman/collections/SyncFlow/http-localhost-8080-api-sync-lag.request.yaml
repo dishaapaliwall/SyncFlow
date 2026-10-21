@@ -1,6 +1,0 @@
-$kind: http-request
-name: http://localhost:8080/api/sync/lag
-description: ""
-url: http://localhost:8080/api/sync/lag
-method: GET
-order: 6000

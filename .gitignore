@@ -40,3 +40,9 @@ bin/
 # Operating system
 .DS_Store
 Thumbs.db
+
+# Docker secrets and local overrides
+docker-compose.override.yml
+
+# Logs
+*.log

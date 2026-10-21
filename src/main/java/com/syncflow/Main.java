@@ -1,4 +1,7 @@
+package com.syncflow;
+
 import com.syncflow.cli.ConfigCommand;
+import com.syncflow.cli.EventsCommand;
 import com.syncflow.cli.LagCommand;
 import com.syncflow.cli.ProgressCommand;
 import com.syncflow.cli.StartCommand;
@@ -20,6 +23,7 @@ import picocli.CommandLine.Command;
                 StatusCommand.class,
                 ProgressCommand.class,
                 LagCommand.class,
+                EventsCommand.class,
                 ConfigCommand.class
         }
 )
@@ -27,7 +31,7 @@ public class Main implements Runnable {
 
     @Override
     public void run() {
-        System.out.println("Welcome to SyncFlow! Use --help to see available commands.");
+        System.out.println("Welcome to SyncFlow CLI! Use --help to see available commands.");
     }
 
     public static void main(String[] args) {

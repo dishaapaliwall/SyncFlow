@@ -12,7 +12,7 @@ public class LagCommand implements Runnable {
     private final LagMonitor lagMonitor;
 
     public LagCommand() {
-        this.lagMonitor = new LagMonitor(300000);
+        this.lagMonitor = null;
     }
 
     public LagCommand(LagMonitor lagMonitor) {
@@ -21,17 +21,16 @@ public class LagCommand implements Runnable {
 
     @Override
     public void run() {
-
-        System.out.println(
-                "Current lag: " +
-                        lagMonitor.getCurrentLagMillis() +
-                        " ms"
-        );
-
-        if (lagMonitor.isAlertRequired()) {
-            System.out.println("ALERT: Replication lag is above threshold");
+        if (lagMonitor != null) {
+            System.out.println("Current lag: " + lagMonitor.getCurrentLagMillis() + " ms");
+            if (lagMonitor.isAlertRequired()) {
+                System.out.println("ALERT: Replication lag is above threshold");
+            } else {
+                System.out.println("Replication lag is within threshold");
+            }
         } else {
-            System.out.println("Replication lag is within threshold");
+            String response = ApiClient.get("/lag");
+            System.out.println("Replication Lag: " + response);
         }
     }
 }

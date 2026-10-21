@@ -11,6 +11,8 @@ services:
       - "5434:5432"
     volumes:
       - source_data:/var/lib/postgresql
+      - ./sql/source_schema.sql:/docker-entrypoint-initdb.d/01-source-schema.sql:ro
+      - ./sql/sample_data.sql:/docker-entrypoint-initdb.d/02-sample-data.sql:ro
 
   target-db:
     image: postgres:18
@@ -23,6 +25,7 @@ services:
       - "5435:5432"
     volumes:
       - target_data:/var/lib/postgresql
+      - ./sql/target_schema.sql:/docker-entrypoint-initdb.d/01-target-schema.sql:ro
 
 volumes:
   source_data:

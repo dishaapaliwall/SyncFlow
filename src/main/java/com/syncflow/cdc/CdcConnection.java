@@ -28,14 +28,13 @@ public class CdcConnection {
     }
 
     public Connection connect() throws SQLException {
-
-        TimeZone.setDefault(
-                TimeZone.getTimeZone("Asia/Kolkata")
-        );
+        // Fix Windows default "Asia/Calcutta" issue for PostgreSQL JDBC
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
 
         Properties properties = new Properties();
         properties.setProperty("user", username);
         properties.setProperty("password", password);
+        properties.setProperty("options", "-c TimeZone=UTC");
 
         // PostgreSQL logical replication settings
         properties.setProperty("replication", "database");

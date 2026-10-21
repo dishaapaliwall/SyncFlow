@@ -1,6 +1,0 @@
-$kind: http-request
-name: http://localhost:8080/api/sync/status
-description: ""
-url: http://localhost:8080/api/sync/status
-method: GET
-order: 1000

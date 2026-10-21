@@ -13,6 +13,8 @@ import java.nio.ByteBuffer;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 public class SyncEngine implements Runnable {
@@ -26,9 +28,10 @@ public class SyncEngine implements Runnable {
     private final Consumer<ChangeEvent> eventConsumer;
     private final ProgressTracker progressTracker;
     private final LagMonitor lagMonitor;
+    private final BatchProcessor batchProcessor;
 
-    private volatile boolean running = false;
-    private volatile boolean connected = false;
+    private volatile boolean running;
+    private volatile boolean connected;
     private volatile CdcReader activeReader;
     private Thread workerThread;
 
@@ -38,7 +41,8 @@ public class SyncEngine implements Runnable {
             String publicationName,
             Consumer<ChangeEvent> eventConsumer,
             ProgressTracker progressTracker,
-            LagMonitor lagMonitor) {
+            LagMonitor lagMonitor,
+            BatchProcessor batchProcessor) {
 
         this.cdcConnection = cdcConnection;
         this.slotName = slotName;
@@ -46,6 +50,7 @@ public class SyncEngine implements Runnable {
         this.eventConsumer = eventConsumer;
         this.progressTracker = progressTracker;
         this.lagMonitor = lagMonitor;
+        this.batchProcessor = batchProcessor;
     }
 
     public synchronized void start() {
@@ -59,33 +64,25 @@ public class SyncEngine implements Runnable {
     }
 
     public void stop() {
-        Thread threadToStop;
+        running = false;
 
-        synchronized (this) {
-            running = false;
-            threadToStop = workerThread;
-
-            if (threadToStop != null) {
-                threadToStop.interrupt();
-            }
+        Thread thread = workerThread;
+        if (thread != null) {
+            thread.interrupt();
         }
 
-        // Closing the active stream helps unblock a worker reading from it.
         CdcReader reader = activeReader;
         if (reader != null) {
             try {
                 reader.close();
             } catch (SQLException e) {
-                System.err.println(
-                        "Error closing replication stream during stop: "
-                                + e.getMessage());
+                System.err.println("Error closing CDC stream: " + e.getMessage());
             }
         }
 
-        if (threadToStop != null
-                && threadToStop != Thread.currentThread()) {
+        if (thread != null && thread != Thread.currentThread()) {
             try {
-                threadToStop.join(3000);
+                thread.join(3000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -102,15 +99,13 @@ public class SyncEngine implements Runnable {
 
     @Override
     public void run() {
-        long retryDelayMs = INITIAL_RETRY_DELAY_MS;
+        long retryDelay = INITIAL_RETRY_DELAY_MS;
 
         try {
             while (running && !Thread.currentThread().isInterrupted()) {
                 CdcReader reader = null;
-                connected = false;
-                try {
-                    System.out.println("Connecting to source PostgreSQL...");
 
+                try {
                     cdcConnection.connect();
 
                     if (!running) {
@@ -124,17 +119,12 @@ public class SyncEngine implements Runnable {
                     reader = new CdcReader(stream);
                     activeReader = reader;
                     connected = true;
-
-                    System.out.println("CDC replication stream connected.");
-
-                    // Reset the delay after a successful connection.
-                    retryDelayMs = INITIAL_RETRY_DELAY_MS;
-                    System.out.println("CDC replication stream connected.");
+                    retryDelay = INITIAL_RETRY_DELAY_MS;
 
                     LogicalDecoder decoder = new LogicalDecoder();
+                    List<ChangeEvent> transactionEvents = new ArrayList<>();
 
-                    while (running
-                            && !Thread.currentThread().isInterrupted()) {
+                    while (running && !Thread.currentThread().isInterrupted()) {
                         ByteBuffer buffer = reader.read();
 
                         if (buffer == null) {
@@ -145,71 +135,66 @@ public class SyncEngine implements Runnable {
                         ChangeEvent event = decoder.decode(buffer);
 
                         if (event != null) {
-                            if (event.getTimestamp() != null
-                                    && lagMonitor != null) {
-                                long lagMillis = Math.abs(
-                                        Duration.between(
-                                                event.getTimestamp(),
-                                                LocalDateTime.now()
-                                        ).toMillis());
+                            transactionEvents.add(event);
 
-                                lagMonitor.updateLag(lagMillis);
-                            }
-
-                            try {
-                                if (eventConsumer != null) {
-                                    eventConsumer.accept(event);
-                                }
-
-                                if (progressTracker != null) {
-                                    progressTracker.recordSuccess();
-                                }
-                            } catch (Exception e) {
-                                if (progressTracker != null) {
-                                    progressTracker.recordFailure();
-                                }
-                                throw e;
+                            if (event.getTimestamp() != null && lagMonitor != null) {
+                                long lag = Math.abs(Duration.between(
+                                        event.getTimestamp(),
+                                        LocalDateTime.now()).toMillis());
+                                lagMonitor.updateLag(lag);
                             }
                         }
 
-                        reader.acknowledge();
+                        if (decoder.isCommitMessage()) {
+                            if (!transactionEvents.isEmpty()) {
+                                batchProcessor.process(transactionEvents);
+
+                                for (ChangeEvent committedEvent : transactionEvents) {
+                                    if (eventConsumer != null) {
+                                        eventConsumer.accept(committedEvent);
+                                    }
+                                    if (progressTracker != null) {
+                                        progressTracker.recordSuccess();
+                                    }
+                                }
+
+                                transactionEvents.clear();
+                            }
+
+                            // Acknowledge only after target transaction succeeds.
+                            reader.acknowledge();
+                        }
                     }
 
                 } catch (InterruptedException e) {
-                    // Manual stop requested. Do not retry.
                     Thread.currentThread().interrupt();
                     break;
-
                 } catch (Exception e) {
-                    if (!running
-                            || Thread.currentThread().isInterrupted()) {
+                    if (!running || Thread.currentThread().isInterrupted()) {
                         break;
                     }
 
-                    System.err.println(
-                            "CDC connection/stream failed: "
-                                    + e.getMessage());
+                    if (progressTracker != null) {
+                        progressTracker.recordFailure();
+                    }
 
+                    System.err.println("CDC sync failed: " + e.getMessage());
                 } finally {
-                    activeReader = null;
                     connected = false;
+                    activeReader = null;
 
                     if (reader != null) {
                         try {
                             reader.close();
                         } catch (SQLException e) {
-                            System.err.println(
-                                    "Error closing replication stream: "
-                                            + e.getMessage());
+                            System.err.println("Error closing CDC stream: " + e.getMessage());
                         }
                     }
 
                     try {
                         cdcConnection.close();
                     } catch (SQLException e) {
-                        System.err.println(
-                                "Error closing CDC connection: "
-                                        + e.getMessage());
+                        System.err.println("Error closing source connection: " + e.getMessage());
                     }
                 }
 
@@ -217,26 +202,19 @@ public class SyncEngine implements Runnable {
                     break;
                 }
 
-                System.out.println(
-                        "Retrying CDC connection in "
-                                + retryDelayMs + " ms...");
-
                 try {
-                    Thread.sleep(retryDelayMs);
+                    Thread.sleep(retryDelay);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
 
-                retryDelayMs = Math.min(
-                        retryDelayMs * 2,
-                        MAX_RETRY_DELAY_MS);
+                retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS);
             }
-
         } finally {
+            connected = false;
             running = false;
             activeReader = null;
-            System.out.println("CDC engine stopped.");
         }
     }
 }

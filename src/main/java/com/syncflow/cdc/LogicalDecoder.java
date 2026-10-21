@@ -1,3 +1,4 @@
+
 package com.syncflow.cdc;
 
 import com.syncflow.event.ChangeEvent;
@@ -8,32 +9,33 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Decodes PostgreSQL logical replication messages into ChangeEvent objects.
- */
 public class LogicalDecoder {
 
-    // Simple container to hold table name and its column names
     private static class TableSchema {
         String tableName;
-        List<String> columns = new ArrayList<>();
+        String schemaName;
 
-        TableSchema(String tableName) {
+        List<String> columns = new ArrayList<>();
+        List<Boolean> keyColumns = new ArrayList<>();
+        List<Integer> typeOids = new ArrayList<>();
+
+        TableSchema(String schemaName, String tableName) {
+            this.schemaName = schemaName;
             this.tableName = tableName;
         }
     }
 
-    // Cache: Relation ID (e.g. 16384) -> TableSchema
     private final Map<Integer, TableSchema> schemaCache = new HashMap<>();
 
     private String currentLsn = "0/0";
     private LocalDateTime currentTimestamp = LocalDateTime.now();
+    private boolean commitMessage;
 
     public ChangeEvent decode(ByteBuffer buffer) {
-
         if (buffer == null) {
             throw new IllegalArgumentException("Buffer cannot be null");
         }
@@ -42,162 +44,369 @@ public class LogicalDecoder {
             throw new IllegalArgumentException("Buffer cannot be empty");
         }
 
-        // First byte tells the message type: B, R, I, U, D, C
-        char messageType = (char) buffer.get();
+        commitMessage = false;
+        char type = (char) buffer.get();
 
-        switch (messageType) {
-            case 'B': // BEGIN
-                parseBegin(buffer);
-                return null;
+        try {
+            switch (type) {
+                case 'B':
+                    parseBegin(buffer);
+                    return null;
 
-            case 'R': // RELATION (Table schema metadata)
-                parseRelation(buffer);
-                return null;
+                case 'R':
+                    parseRelation(buffer);
+                    return null;
 
-            case 'I': // INSERT
-                return parseInsert(buffer);
+                case 'I':
+                    return parseInsert(buffer);
 
-            case 'U': // UPDATE
-                return parseUpdate(buffer);
+                case 'U':
+                    return parseUpdate(buffer);
 
-            case 'D': // DELETE
-                return parseDelete(buffer);
+                case 'D':
+                    return parseDelete(buffer);
 
-            case 'C': // COMMIT
-                return null;
+                case 'C':
+                    commitMessage = true;
+                    return null;
 
-            default:
-                // Ignore any other message types safely
-                return null;
+                default:
+                    return null;
+            }
+        } catch (java.nio.BufferUnderflowException e) {
+            throw new IllegalArgumentException(
+                    "Incomplete PostgreSQL replication message: " + type, e);
         }
     }
 
-    // 1. Parse BEGIN: save LSN and current timestamp
     private void parseBegin(ByteBuffer buffer) {
-        if (buffer.remaining() >= 8) {
-            long lsn = buffer.getLong();
-            this.currentLsn = Long.toHexString(lsn);
+        if (buffer.remaining() < 20) {
+            throw new IllegalArgumentException("Invalid BEGIN message");
         }
-        this.currentTimestamp = LocalDateTime.now();
+
+        long finalLsn = buffer.getLong();
+        buffer.getLong();
+        buffer.getInt();
+
+        long upper = (finalLsn >>> 32) & 0xffffffffL;
+        long lower = finalLsn & 0xffffffffL;
+
+        currentLsn = Long.toHexString(upper).toUpperCase()
+                + "/" + Long.toHexString(lower).toUpperCase();
+
+        currentTimestamp = LocalDateTime.now();
     }
 
-    // 2. Parse RELATION: read table name and columns, save to cache
     private void parseRelation(ByteBuffer buffer) {
         int relationId = buffer.getInt();
-        readCString(buffer); // Skip namespace (schema)
+
+        String schemaName = readCString(buffer);
         String tableName = readCString(buffer);
-        buffer.get(); // Skip replica identity byte
 
-        short columnCount = buffer.getShort();
-        TableSchema schema = new TableSchema(tableName);
+        buffer.get(); // Replica identity
 
-        for (int i = 0; i < columnCount; i++) {
-            buffer.get(); // Skip column flags
+        int count = Short.toUnsignedInt(buffer.getShort());
+        TableSchema schema = new TableSchema(schemaName, tableName);
+
+        for (int i = 0; i < count; i++) {
+            int flags = Byte.toUnsignedInt(buffer.get());
             String columnName = readCString(buffer);
-            buffer.getInt(); // Skip type OID
-            buffer.getInt(); // Skip type modifier
+            int typeOid = buffer.getInt();
+            buffer.getInt(); // Type modifier
+
             schema.columns.add(columnName);
+            schema.keyColumns.add((flags & 1) != 0);
+            schema.typeOids.add(typeOid);
         }
 
         schemaCache.put(relationId, schema);
+
+        System.out.println(
+                "[RELATION] table=" + schema.tableName
+                        + ", columns=" + schema.columns
+                        + ", keyColumns=" + schema.keyColumns
+        );
     }
 
-    // 3. Parse INSERT: read new row values and create ChangeEvent
     private ChangeEvent parseInsert(ByteBuffer buffer) {
         int relationId = buffer.getInt();
-        TableSchema schema = schemaCache.get(relationId);
+        TableSchema schema = getSchema(relationId);
+
         if (schema == null) {
             return null;
         }
 
-        buffer.get(); // Skip 'N' (New tuple indicator)
-        Map<String, Object> rowData = readTuple(buffer, schema.columns);
+        requireMarker(buffer, 'N');
+
+        Map<String, Object> data = readTuple(buffer, schema, false);
 
         return new ChangeEvent(
                 schema.tableName,
                 OperationType.INSERT,
-                rowData,
+                data,
+                null,
                 currentLsn,
                 currentTimestamp
         );
     }
 
-    // 4. Parse UPDATE: read updated row values and create ChangeEvent
     private ChangeEvent parseUpdate(ByteBuffer buffer) {
         int relationId = buffer.getInt();
-        TableSchema schema = schemaCache.get(relationId);
+        TableSchema schema = getSchema(relationId);
+
         if (schema == null) {
             return null;
         }
 
-        char tupleType = (char) buffer.get();
-        // If old key ('K') or old tuple ('O') exists, skip it first
-        if (tupleType == 'K' || tupleType == 'O') {
-            readTuple(buffer, schema.columns);
-            buffer.get(); // Skip 'N' marker
+        Map<String, Object> oldData = null;
+        char marker = (char) buffer.get();
+
+        System.out.println(
+                "[UPDATE DEBUG] table=" + schema.tableName
+                        + ", marker=" + marker
+        );
+
+        if (marker == 'K' || marker == 'O') {
+            Map<String, Object> previousRow =
+                    readTuple(buffer, schema, marker == 'K');
+
+            oldData = marker == 'K'
+                    ? previousRow
+                    : extractKey(previousRow, schema);
+
+            requireMarker(buffer, 'N');
+
+        } else if (marker != 'N') {
+            throw new IllegalArgumentException(
+                    "Unexpected UPDATE tuple marker: " + marker
+            );
         }
 
-        Map<String, Object> rowData = readTuple(buffer, schema.columns);
+        // The N marker has already been consumed.
+        Map<String, Object> newData = readTuple(buffer, schema, false);
+
+        // When PostgreSQL supplies no old tuple, use the primary key
+        // from the new tuple, provided that the primary key is unchanged.
+        if (oldData == null || oldData.isEmpty()) {
+            oldData = extractKey(newData, schema);
+        }
+
+        System.out.println("[UPDATE DEBUG] oldData=" + oldData);
+        System.out.println("[UPDATE DEBUG] newData=" + newData);
+
+        if (oldData == null || oldData.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "UPDATE requires primary-key values for table: "
+                            + schema.tableName
+            );
+        }
 
         return new ChangeEvent(
                 schema.tableName,
                 OperationType.UPDATE,
-                rowData,
+                newData,
+                oldData,
                 currentLsn,
                 currentTimestamp
         );
     }
 
-    // 5. Parse DELETE: read deleted row key and create ChangeEvent
     private ChangeEvent parseDelete(ByteBuffer buffer) {
         int relationId = buffer.getInt();
-        TableSchema schema = schemaCache.get(relationId);
+        TableSchema schema = getSchema(relationId);
+
         if (schema == null) {
             return null;
         }
 
-        buffer.get(); // Skip 'K' or 'O' marker
-        Map<String, Object> rowData = readTuple(buffer, schema.columns);
+        char marker = (char) buffer.get();
+
+        if (marker != 'K' && marker != 'O') {
+            throw new IllegalArgumentException(
+                    "Unexpected DELETE tuple marker: " + marker
+            );
+        }
+
+        Map<String, Object> previousRow =
+                readTuple(buffer, schema, marker == 'K');
+
+        Map<String, Object> oldData = marker == 'K'
+                ? previousRow
+                : extractKey(previousRow, schema);
+
+        if (oldData == null || oldData.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "DELETE requires old primary-key values for table: "
+                            + schema.tableName
+            );
+        }
 
         return new ChangeEvent(
                 schema.tableName,
                 OperationType.DELETE,
-                rowData,
+                oldData,
+                oldData,
                 currentLsn,
                 currentTimestamp
         );
     }
 
-    // Helper to read column values of a row
-    private Map<String, Object> readTuple(ByteBuffer buffer, List<String> columns) {
-        short columnCount = buffer.getShort();
-        Map<String, Object> row = new HashMap<>();
+    private TableSchema getSchema(int relationId) {
+        return schemaCache.get(relationId);
+    }
 
-        for (int i = 0; i < columnCount; i++) {
+    private Map<String, Object> readTuple(
+            ByteBuffer buffer,
+            TableSchema schema,
+            boolean keyTuple) {
+
+        int count = Short.toUnsignedInt(buffer.getShort());
+
+        if (count > schema.columns.size()) {
+            throw new IllegalArgumentException(
+                    "Tuple has " + count
+                            + " columns, but relation "
+                            + schema.tableName + " has only "
+                            + schema.columns.size() + " columns"
+            );
+        }
+
+        Map<String, Object> row = new LinkedHashMap<>();
+
+        for (int i = 0; i < count; i++) {
+
+            String columnName = schema.columns.get(i);
+            boolean isKeyColumn = schema.keyColumns.get(i);
+
             char valueType = (char) buffer.get();
-            String colName = (i < columns.size()) ? columns.get(i) : ("col_" + i);
 
             if (valueType == 'n') {
-                // 'n' means value is NULL
-                row.put(colName, null);
+                if (!keyTuple || isKeyColumn) {
+                    row.put(columnName, null);
+                }
+
             } else if (valueType == 't') {
-                // 't' means value is text
+
                 int length = buffer.getInt();
+
+                if (length < 0 || length > buffer.remaining()) {
+                    throw new IllegalArgumentException(
+                            "Invalid tuple value length for column: "
+                                    + columnName
+                    );
+                }
+
                 byte[] bytes = new byte[length];
                 buffer.get(bytes);
-                row.put(colName, new String(bytes, StandardCharsets.UTF_8));
+
+                String value = new String(
+                        bytes,
+                        StandardCharsets.UTF_8
+                );
+
+                int oid = schema.typeOids.get(i);
+
+                // Key tuples only need to retain key-column values.
+                if (!keyTuple || isKeyColumn) {
+                    row.put(columnName, convertValue(value, oid));
+                }
+
+            } else if (valueType == 'u') {
+
+                // Unchanged TOAST value.
+                // Do not overwrite the existing value with NULL.
+
+            } else {
+                throw new IllegalArgumentException(
+                        "Unsupported tuple value marker: "
+                                + (int) valueType
+                                + " ('" + valueType + "')"
+                                + ", column=" + columnName
+                                + ", table=" + schema.tableName
+                                + ", tupleColumnIndex=" + i
+                );
             }
         }
+
         return row;
     }
 
-    // Helper to read a null-terminated string (C-string)
-    private String readCString(ByteBuffer buffer) {
-        StringBuilder sb = new StringBuilder();
-        byte b;
-        while (buffer.hasRemaining() && (b = buffer.get()) != 0) {
-            sb.append((char) b);
+    private Map<String, Object> extractKey(
+            Map<String, Object> row,
+            TableSchema schema) {
+
+        if (row == null || row.isEmpty()) {
+            return null;
         }
-        return sb.toString();
+
+        Map<String, Object> key = new LinkedHashMap<>();
+
+        for (int i = 0; i < schema.columns.size(); i++) {
+            if (schema.keyColumns.get(i)) {
+                String column = schema.columns.get(i);
+
+                if (row.containsKey(column)) {
+                    key.put(column, row.get(column));
+                }
+            }
+        }
+
+        return key.isEmpty() ? null : key;
+    }
+
+    private Object convertValue(String value, int oid) {
+        return switch (oid) {
+            case 16 -> value.equals("t");
+            case 20 -> Long.valueOf(value);
+            case 21 -> Short.valueOf(value);
+            case 23 -> Integer.valueOf(value);
+            case 700 -> Float.valueOf(value);
+            case 701 -> Double.valueOf(value);
+            case 1700 -> new java.math.BigDecimal(value);
+            case 1082 -> java.sql.Date.valueOf(value);
+            case 1114 -> java.sql.Timestamp.valueOf(value);
+            case 1184 -> java.time.OffsetDateTime.parse(
+                    value.replace(" ", "T"));
+            case 2950 -> java.util.UUID.fromString(value);
+            default -> value;
+        };
+    }
+
+    private void requireMarker(ByteBuffer buffer, char expected) {
+        if (!buffer.hasRemaining()) {
+            throw new IllegalArgumentException(
+                    "Missing tuple marker: " + expected
+            );
+        }
+
+        char actual = (char) buffer.get();
+
+        if (actual != expected) {
+            throw new IllegalArgumentException(
+                    "Expected tuple marker " + expected + " but got " + actual
+            );
+        }
+    }
+
+    private String readCString(ByteBuffer buffer) {
+        StringBuilder result = new StringBuilder();
+
+        while (buffer.hasRemaining()) {
+            byte b = buffer.get();
+
+            if (b == 0) {
+                return result.toString();
+            }
+
+            result.append((char) (b & 0xff));
+        }
+
+        throw new IllegalArgumentException(
+                "Unterminated PostgreSQL C-string"
+        );
+    }
+
+    public boolean isCommitMessage() {
+        return commitMessage;
     }
 }

@@ -1,0 +1,33 @@
+
+services:
+  source-test:
+    image: postgres:18
+    container_name: syncflow-source-test
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_DB: syncflow_source_test
+      POSTGRES_USER: syncflow
+      POSTGRES_PASSWORD: syncflow123
+    ports:
+      - "5544:5432"
+    volumes:
+      - source_test_data:/var/lib/postgresql
+      - ./sql/source_schema.sql:/docker-entrypoint-initdb.d/01-source-schema.sql:ro
+      - ./sql/sample_data.sql:/docker-entrypoint-initdb.d/02-sample-data.sql:ro
+
+  target-test:
+    image: postgres:18
+    container_name: syncflow-target-test
+    environment:
+      POSTGRES_DB: syncflow_target_test
+      POSTGRES_USER: syncflow
+      POSTGRES_PASSWORD: syncflow123
+    ports:
+      - "5545:5432"
+    volumes:
+      - target_test_data:/var/lib/postgresql
+      - ./sql/target_schema.sql:/docker-entrypoint-initdb.d/01-target-schema.sql:ro
+
+volumes:
+  source_test_data:
+  target_test_data:

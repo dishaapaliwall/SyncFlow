@@ -1,9 +1,0 @@
-$kind: http-request
-name: http://localhost:8080/api/sync/start
-description: ""
-url: http://localhost:8080/api/sync/start
-method: POST
-body:
-  type: json
-  content: ""
-order: 2000
