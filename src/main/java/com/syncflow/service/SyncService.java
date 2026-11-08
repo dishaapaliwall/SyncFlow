@@ -17,6 +17,10 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 
+import org.springframework.beans.factory.annotation.Value;
+
+import com.syncflow.reliability.CheckpointManager;
+
 @Service
 public class SyncService {
 
@@ -57,12 +61,20 @@ public class SyncService {
         TransactionManager transactionManager =
                 new TransactionManager(targetConnection);
 
+        CheckpointManager checkpointManager =
+                new CheckpointManager(targetConnection);
+
         BatchProcessor batchProcessor =
-                new BatchProcessor(targetWriter, transactionManager);
+                new BatchProcessor(
+                        targetWriter,
+                        transactionManager,
+                        checkpointManager
+                );
 
         this.progressTracker = new ProgressTracker();
         this.lagMonitor = new LagMonitor(300000);
         this.eventBuffer = new EventBuffer(100);
+
 
         this.syncEngine = new SyncEngine(
                 cdcConnection,
@@ -81,7 +93,8 @@ public class SyncService {
                 },
                 progressTracker,
                 lagMonitor,
-                batchProcessor
+                batchProcessor,
+                checkpointManager
         );
     }
 
@@ -114,4 +127,5 @@ public class SyncService {
     public EventBuffer getEventBuffer() {
         return eventBuffer;
     }
+
 }
