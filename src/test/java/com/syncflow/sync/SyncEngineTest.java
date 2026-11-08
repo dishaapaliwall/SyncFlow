@@ -5,6 +5,7 @@ import com.syncflow.cdc.CdcConnection;
 import com.syncflow.event.ChangeEvent;
 import com.syncflow.monitoring.LagMonitor;
 import com.syncflow.monitoring.ProgressTracker;
+import com.syncflow.reliability.CheckpointManager;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
@@ -28,6 +29,8 @@ class SyncEngineTest {
         BatchProcessor batchProcessor =
                 new BatchProcessor(targetWriter, transactionManager);
 
+        CheckpointManager checkpointManager = mock(CheckpointManager.class);
+
         ProgressTracker tracker = new ProgressTracker();
         LagMonitor lagMonitor = new LagMonitor(300000);
         List<ChangeEvent> receivedEvents = new ArrayList<>();
@@ -39,7 +42,8 @@ class SyncEngineTest {
                 receivedEvents::add,
                 tracker,
                 lagMonitor,
-                batchProcessor
+                batchProcessor,
+                checkpointManager
         );
 
         assertFalse(engine.isRunning());
