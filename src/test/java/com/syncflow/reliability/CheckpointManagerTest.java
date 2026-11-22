@@ -1,46 +1,69 @@
+
 package com.syncflow.reliability;
 
-import com.syncflow.reliability.CheckpointManager;
 import org.junit.jupiter.api.Test;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class CheckpointManagerTest {
 
-    @Test
-    void shouldSaveCheckpoint() {
+    private CheckpointManager createManager(
+            Connection connection,
+            PreparedStatement statement
+    ) throws Exception {
 
-        CheckpointManager manager =
-                new CheckpointManager();
+        when(connection.prepareStatement(anyString()))
+                .thenReturn(statement);
 
-        manager.saveCheckpoint("0/123456");
+        when(statement.executeUpdate()).thenReturn(1);
 
-        assertEquals(
-                "0/123456",
-                manager.getLastProcessedLsn()
-        );
+        return new CheckpointManager(connection);
     }
 
     @Test
-    void shouldUpdateCheckpoint() {
+    void shouldSaveCheckpoint() throws Exception {
+
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
 
         CheckpointManager manager =
-                new CheckpointManager();
+                createManager(connection, statement);
+
+        manager.saveCheckpoint("0/123456");
+
+        verify(statement).setString(1, "0/123456");
+        verify(statement, times(2)).executeUpdate();
+    }
+
+    @Test
+    void shouldUpdateCheckpoint() throws Exception {
+
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+
+        CheckpointManager manager =
+                createManager(connection, statement);
 
         manager.saveCheckpoint("0/123456");
         manager.saveCheckpoint("0/123457");
 
-        assertEquals(
-                "0/123457",
-                manager.getLastProcessedLsn()
-        );
+        verify(statement).setString(1, "0/123456");
+        verify(statement).setString(1, "0/123457");
     }
 
     @Test
-    void shouldRejectEmptyLsn() {
+    void shouldRejectEmptyLsn() throws Exception {
+
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
 
         CheckpointManager manager =
-                new CheckpointManager();
+                createManager(connection, statement);
 
         assertThrows(
                 IllegalArgumentException.class,
@@ -49,11 +72,49 @@ class CheckpointManagerTest {
     }
 
     @Test
-    void shouldInitiallyHaveNoCheckpoint() {
+    void shouldInitiallyHaveNoCheckpoint() throws Exception {
+
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet resultSet = mock(ResultSet.class);
+
+        when(connection.prepareStatement(anyString()))
+                .thenReturn(statement);
+
+        when(statement.executeUpdate()).thenReturn(1);
+        when(statement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getString("last_processed_lsn"))
+                .thenReturn(null);
 
         CheckpointManager manager =
-                new CheckpointManager();
+                new CheckpointManager(connection);
 
         assertNull(manager.getLastProcessedLsn());
+    }
+
+    @Test
+    void shouldReadSavedCheckpointFromDatabase() throws Exception {
+
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet resultSet = mock(ResultSet.class);
+
+        when(connection.prepareStatement(anyString()))
+                .thenReturn(statement);
+
+        when(statement.executeUpdate()).thenReturn(1);
+        when(statement.executeQuery()).thenReturn(resultSet);
+        when(resultSet.next()).thenReturn(true);
+        when(resultSet.getString("last_processed_lsn"))
+                .thenReturn("0/123456");
+
+        CheckpointManager manager =
+                new CheckpointManager(connection);
+
+        assertEquals(
+                "0/123456",
+                manager.getLastProcessedLsn()
+        );
     }
 }

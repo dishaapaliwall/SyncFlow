@@ -41,7 +41,7 @@ class BatchProcessorTest {
     }
 
     @Test
-    void shouldRejectMoreThanTenEvents() {
+    void shouldProcessMoreThanTenEvents() throws Exception {
 
         TargetWriter targetWriter = mock(TargetWriter.class);
         TransactionManager transactionManager = mock(TransactionManager.class);
@@ -55,12 +55,12 @@ class BatchProcessorTest {
             events.add(createEvent(i));
         }
 
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> processor.process(events)
-        );
+        processor.process(events);
 
-        verifyNoInteractions(targetWriter, transactionManager);
+        verify(transactionManager).begin();
+        verify(targetWriter, times(11)).write(any(ChangeEvent.class));
+        verify(transactionManager).commit();
+        verify(transactionManager, never()).rollback();
     }
 
     @Test

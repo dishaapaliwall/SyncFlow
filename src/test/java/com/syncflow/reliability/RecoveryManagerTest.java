@@ -1,20 +1,21 @@
+
 package com.syncflow.reliability;
 
-import com.syncflow.reliability.CheckpointManager;
-import com.syncflow.reliability.RecoveryManager;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class RecoveryManagerTest {
 
     @Test
-    void shouldRecoverFromCheckpoint() {
+    void shouldRecoverFromCheckpoint() throws Exception {
 
         CheckpointManager checkpointManager =
-                new CheckpointManager();
+                mock(CheckpointManager.class);
 
-        checkpointManager.saveCheckpoint("0/123456");
+        when(checkpointManager.getLastProcessedLsn())
+                .thenReturn("0/123456");
 
         RecoveryManager recoveryManager =
                 new RecoveryManager(checkpointManager);
@@ -26,12 +27,13 @@ class RecoveryManagerTest {
     }
 
     @Test
-    void shouldAllowRecoveryWhenCheckpointExists() {
+    void shouldAllowRecoveryWhenCheckpointExists() throws Exception {
 
         CheckpointManager checkpointManager =
-                new CheckpointManager();
+                mock(CheckpointManager.class);
 
-        checkpointManager.saveCheckpoint("0/123456");
+        when(checkpointManager.getLastProcessedLsn())
+                .thenReturn("0/123456");
 
         RecoveryManager recoveryManager =
                 new RecoveryManager(checkpointManager);
@@ -40,10 +42,13 @@ class RecoveryManagerTest {
     }
 
     @Test
-    void shouldNotRecoverWithoutCheckpoint() {
+    void shouldNotRecoverWithoutCheckpoint() throws Exception {
 
         CheckpointManager checkpointManager =
-                new CheckpointManager();
+                mock(CheckpointManager.class);
+
+        when(checkpointManager.getLastProcessedLsn())
+                .thenReturn(null);
 
         RecoveryManager recoveryManager =
                 new RecoveryManager(checkpointManager);

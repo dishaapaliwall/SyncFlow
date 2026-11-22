@@ -17,6 +17,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
+import com.syncflow.event.SourceTransaction;
+import org.postgresql.replication.LogSequenceNumber;
+
+import com.syncflow.reliability.CheckpointManager;
+
 public class SyncEngine implements Runnable {
 
     private static final long INITIAL_RETRY_DELAY_MS = 1000;
@@ -30,6 +35,9 @@ public class SyncEngine implements Runnable {
     private final LagMonitor lagMonitor;
     private final BatchProcessor batchProcessor;
 
+    private final CheckpointManager checkpointManager;
+
+
     private volatile boolean running;
     private volatile boolean connected;
     private volatile CdcReader activeReader;
@@ -42,7 +50,8 @@ public class SyncEngine implements Runnable {
             Consumer<ChangeEvent> eventConsumer,
             ProgressTracker progressTracker,
             LagMonitor lagMonitor,
-            BatchProcessor batchProcessor) {
+            BatchProcessor batchProcessor,
+            CheckpointManager checkpointManager) {
 
         this.cdcConnection = cdcConnection;
         this.slotName = slotName;
@@ -51,6 +60,7 @@ public class SyncEngine implements Runnable {
         this.progressTracker = progressTracker;
         this.lagMonitor = lagMonitor;
         this.batchProcessor = batchProcessor;
+        this.checkpointManager = checkpointManager;
     }
 
     public synchronized void start() {
@@ -146,23 +156,65 @@ public class SyncEngine implements Runnable {
                         }
 
                         if (decoder.isCommitMessage()) {
-                            if (!transactionEvents.isEmpty()) {
-                                batchProcessor.process(transactionEvents);
 
-                                for (ChangeEvent committedEvent : transactionEvents) {
-                                    if (eventConsumer != null) {
-                                        eventConsumer.accept(committedEvent);
-                                    }
-                                    if (progressTracker != null) {
-                                        progressTracker.recordSuccess();
-                                    }
+                            // Build one complete source transaction.
+                            SourceTransaction sourceTransaction = new SourceTransaction(
+                                    decoder.getCommitLsn(),
+                                    decoder.getEndLsn(),
+                                    decoder.getCommitTimestamp(),
+                                    transactionEvents
+                            );
+
+                            String endLsn = sourceTransaction.getEndLsn();
+
+                            System.out.println(
+                                    "[SyncFlow] COMMIT received - commitLsn: "
+                                            + sourceTransaction.getCommitLsn()
+                                            + ", endLsn: " + endLsn
+                            );
+
+                            // Check the last transaction successfully committed to the target.
+                            String savedCheckpoint = checkpointManager.getLastProcessedLsn();
+
+                            boolean alreadyApplied = savedCheckpoint != null
+                                    && LogSequenceNumber.valueOf(endLsn).compareTo(
+                                    LogSequenceNumber.valueOf(savedCheckpoint)
+                            ) <= 0;
+
+                            if (alreadyApplied) {
+
+                                // The target already contains this transaction.
+                                // Do not apply it again.
+                                System.out.println(
+                                        "[SyncFlow] Skipping already-applied transaction. End LSN: "
+                                                + endLsn
+                                );
+
+                            } else {
+
+                                // Apply data and save checkpoint atomically.
+                                batchProcessor.process(sourceTransaction);
+
+
+
+                                // Update monitoring only for newly applied transactions.
+                                for (ChangeEvent changeEvent : transactionEvents) {
+                                    eventConsumer.accept(changeEvent);
+                                    progressTracker.recordSuccess();
                                 }
-
-                                transactionEvents.clear();
                             }
 
-                            // Acknowledge only after target transaction succeeds.
-                            reader.acknowledge();
+
+                            // Acknowledge only after the transaction is known to be applied.
+                            reader.acknowledge(LogSequenceNumber.valueOf(endLsn));
+
+                            System.out.println(
+                                    "[SyncFlow] Acknowledged source transaction end LSN: "
+                                            + endLsn
+                            );
+
+                            // Clear after successful processing and acknowledgement.
+                            transactionEvents.clear();
                         }
                     }
 

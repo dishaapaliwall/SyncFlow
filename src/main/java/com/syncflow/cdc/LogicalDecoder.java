@@ -13,6 +13,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
+
 public class LogicalDecoder {
 
     private static class TableSchema {
@@ -34,6 +37,9 @@ public class LogicalDecoder {
     private String currentLsn = "0/0";
     private LocalDateTime currentTimestamp = LocalDateTime.now();
     private boolean commitMessage;
+
+    private String commitLsn;
+    private String endLsn;
 
     public ChangeEvent decode(ByteBuffer buffer) {
         if (buffer == null) {
@@ -67,6 +73,7 @@ public class LogicalDecoder {
                     return parseDelete(buffer);
 
                 case 'C':
+                    parseCommit(buffer);
                     commitMessage = true;
                     return null;
 
@@ -79,22 +86,63 @@ public class LogicalDecoder {
         }
     }
 
-    private void parseBegin(ByteBuffer buffer) {
-        if (buffer.remaining() < 20) {
-            throw new IllegalArgumentException("Invalid BEGIN message");
-        }
+    private void parseCommit(ByteBuffer buffer) {
 
+        // Flags (currently reserved by pgoutput)
+        buffer.get();
+
+        // LSN where the commit record starts
+        long commitLsnValue = buffer.getLong();
+
+        // LSN immediately after the transaction commit record
+        long endLsnValue = buffer.getLong();
+
+        // PostgreSQL timestamp: microseconds since 2000-01-01 UTC
+        long commitTimeMicros = buffer.getLong();
+
+        this.commitLsn = formatLsn(commitLsnValue);
+        this.endLsn = formatLsn(endLsnValue);
+
+        this.currentLsn = this.commitLsn;
+        this.currentTimestamp = LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(946684800L)
+                        .plusNanos(commitTimeMicros * 1000L),
+                ZoneOffset.UTC
+        );
+    }
+
+
+    private String formatLsn(long lsn) {
+
+        long high = (lsn >>> 32) & 0xFFFFFFFFL;
+        long low = lsn & 0xFFFFFFFFL;
+
+        return String.format("%X/%X", high, low);
+    }
+
+
+
+    private void parseBegin(ByteBuffer buffer) {
+
+        // LSN of the commit record
         long finalLsn = buffer.getLong();
-        buffer.getLong();
+
+        // Source transaction commit timestamp
+        long commitTimeMicros = buffer.getLong();
+
+        // Transaction ID (currently not needed)
         buffer.getInt();
 
-        long upper = (finalLsn >>> 32) & 0xffffffffL;
-        long lower = finalLsn & 0xffffffffL;
+        this.currentLsn = formatLsn(finalLsn);
 
-        currentLsn = Long.toHexString(upper).toUpperCase()
-                + "/" + Long.toHexString(lower).toUpperCase();
+        this.currentTimestamp = LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(946684800L)
+                        .plusNanos(commitTimeMicros * 1000L),
+                ZoneOffset.UTC
+        );
 
-        currentTimestamp = LocalDateTime.now();
+        this.commitLsn = null;
+        this.endLsn = null;
     }
 
     private void parseRelation(ByteBuffer buffer) {
@@ -404,6 +452,19 @@ public class LogicalDecoder {
         throw new IllegalArgumentException(
                 "Unterminated PostgreSQL C-string"
         );
+    }
+
+
+    public String getCommitLsn() {
+        return commitLsn;
+    }
+
+    public String getEndLsn() {
+        return endLsn;
+    }
+
+    public LocalDateTime getCommitTimestamp() {
+        return currentTimestamp;
     }
 
     public boolean isCommitMessage() {
