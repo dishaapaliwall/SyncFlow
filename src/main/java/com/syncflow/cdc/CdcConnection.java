@@ -9,6 +9,8 @@ import java.sql.SQLException;
 import java.util.Properties;
 import java.util.TimeZone;
 
+import org.postgresql.replication.LogSequenceNumber;
+
 public class CdcConnection {
 
     private final String url;
@@ -62,6 +64,19 @@ public class CdcConnection {
             String publicationName
     ) throws SQLException {
 
+        return createReplicationStream(
+                slotName,
+                publicationName,
+                null
+        );
+    }
+
+    public PGReplicationStream createReplicationStream(
+            String slotName,
+            String publicationName,
+            String startingLsn
+    ) throws SQLException {
+
         if (connection == null || connection.isClosed()) {
             throw new SQLException(
                     "CDC connection is not established"
@@ -71,7 +86,7 @@ public class CdcConnection {
         PGConnection pgConnection =
                 connection.unwrap(PGConnection.class);
 
-        return pgConnection
+        var builder = pgConnection
                 .getReplicationAPI()
                 .replicationStream()
                 .logical()
@@ -80,8 +95,20 @@ public class CdcConnection {
                 .withSlotOption(
                         "publication_names",
                         publicationName
-                )
-                .start();
+                );
+
+        if (startingLsn != null && !startingLsn.isBlank()) {
+            LogSequenceNumber lsn =
+                    LogSequenceNumber.valueOf(startingLsn);
+
+            builder = builder.withStartPosition(lsn);
+
+            System.out.println(
+                    "[CDC] Starting replication from LSN: " + lsn
+            );
+        }
+
+        return builder.start();
     }
 
     public void close() throws SQLException {

@@ -9,6 +9,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 public class TargetWriter {
@@ -17,9 +18,35 @@ public class TargetWriter {
             Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
 
     private final Connection connection;
+    private final Map<String, String> tableMapping = new ConcurrentHashMap<>();
 
     public TargetWriter(Connection connection) {
+        this(connection, null);
+    }
+
+    public TargetWriter(Connection connection, Map<String, String> tableMapping) {
         this.connection = connection;
+        if (tableMapping != null) {
+            this.tableMapping.putAll(tableMapping);
+        }
+    }
+
+    public void setTableMapping(Map<String, String> mapping) {
+        this.tableMapping.clear();
+        if (mapping != null) {
+            this.tableMapping.putAll(mapping);
+        }
+    }
+
+    public Map<String, String> getTableMapping() {
+        return Map.copyOf(tableMapping);
+    }
+
+    private String resolveTargetTable(String sourceTable) {
+        if (sourceTable != null && tableMapping.containsKey(sourceTable)) {
+            return tableMapping.get(sourceTable);
+        }
+        return sourceTable;
     }
 
     public void write(ChangeEvent event) throws SQLException {
@@ -55,7 +82,8 @@ public class TargetWriter {
             placeholders.add("?");
         }
 
-        String sql = "INSERT INTO " + identifier(event.getTableName())
+        String targetTable = resolveTargetTable(event.getTableName());
+        String sql = "INSERT INTO " + identifier(targetTable)
                 + " (" + columns + ") VALUES (" + placeholders + ")";
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -84,7 +112,8 @@ public class TargetWriter {
             conditions.add(identifier(column) + " IS NOT DISTINCT FROM ?");
         }
 
-        String sql = "UPDATE " + identifier(event.getTableName())
+        String targetTable = resolveTargetTable(event.getTableName());
+        String sql = "UPDATE " + identifier(targetTable)
                 + " SET " + assignments
                 + " WHERE " + conditions;
 
@@ -103,7 +132,7 @@ public class TargetWriter {
 
             if (updated != 1) {
                 throw new SQLException(
-                        "Expected to update one row in " + event.getTableName()
+                        "Expected to update one row in " + targetTable
                                 + " but updated " + updated);
             }
         }
@@ -122,7 +151,8 @@ public class TargetWriter {
             conditions.add(identifier(column) + " IS NOT DISTINCT FROM ?");
         }
 
-        String sql = "DELETE FROM " + identifier(event.getTableName())
+        String targetTable = resolveTargetTable(event.getTableName());
+        String sql = "DELETE FROM " + identifier(targetTable)
                 + " WHERE " + conditions;
 
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -136,7 +166,7 @@ public class TargetWriter {
 
             if (deleted != 1) {
                 throw new SQLException(
-                        "Expected to delete one row from " + event.getTableName()
+                        "Expected to delete one row from " + targetTable
                                 + " but deleted " + deleted);
             }
         }
