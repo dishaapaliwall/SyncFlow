@@ -37,12 +37,15 @@ public class SyncEngine implements Runnable {
 
     private final CheckpointManager checkpointManager;
 
+    private final String startingLsn;
+
 
     private volatile boolean running;
     private volatile boolean connected;
     private volatile CdcReader activeReader;
     private Thread workerThread;
 
+    // Backward-compatible constructor for existing Stage 1/2 code.
     public SyncEngine(
             CdcConnection cdcConnection,
             String slotName,
@@ -51,8 +54,33 @@ public class SyncEngine implements Runnable {
             ProgressTracker progressTracker,
             LagMonitor lagMonitor,
             BatchProcessor batchProcessor,
-            CheckpointManager checkpointManager) {
+            CheckpointManager checkpointManager
+    ) {
+        this(
+                cdcConnection,
+                slotName,
+                publicationName,
+                eventConsumer,
+                progressTracker,
+                lagMonitor,
+                batchProcessor,
+                checkpointManager,
+                null
+        );
+    }
 
+    // New constructor supporting snapshot LSN.
+    public SyncEngine(
+            CdcConnection cdcConnection,
+            String slotName,
+            String publicationName,
+            Consumer<ChangeEvent> eventConsumer,
+            ProgressTracker progressTracker,
+            LagMonitor lagMonitor,
+            BatchProcessor batchProcessor,
+            CheckpointManager checkpointManager,
+            String startingLsn
+    ) {
         this.cdcConnection = cdcConnection;
         this.slotName = slotName;
         this.publicationName = publicationName;
@@ -61,6 +89,7 @@ public class SyncEngine implements Runnable {
         this.lagMonitor = lagMonitor;
         this.batchProcessor = batchProcessor;
         this.checkpointManager = checkpointManager;
+        this.startingLsn = startingLsn;
     }
 
     public synchronized void start() {
@@ -124,7 +153,10 @@ public class SyncEngine implements Runnable {
 
                     PGReplicationStream stream =
                             cdcConnection.createReplicationStream(
-                                    slotName, publicationName);
+                                    slotName,
+                                    publicationName,
+                                    startingLsn
+                            );
 
                     reader = new CdcReader(stream);
                     activeReader = reader;
