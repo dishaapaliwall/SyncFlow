@@ -1,12 +1,6 @@
 package com.syncflow;
 
-import com.syncflow.cli.ConfigCommand;
-import com.syncflow.cli.EventsCommand;
-import com.syncflow.cli.LagCommand;
-import com.syncflow.cli.ProgressCommand;
-import com.syncflow.cli.StartCommand;
-import com.syncflow.cli.StatusCommand;
-import com.syncflow.cli.StopCommand;
+import com.syncflow.cli.*;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
@@ -19,6 +13,7 @@ import picocli.CommandLine.Command;
         mixinStandardHelpOptions = true,
         subcommands = {
                 StartCommand.class,
+                BootstrapCommand.class,
                 StopCommand.class,
                 StatusCommand.class,
                 ProgressCommand.class,
