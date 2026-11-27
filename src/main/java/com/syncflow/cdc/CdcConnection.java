@@ -112,7 +112,6 @@ public class CdcConnection {
     }
 
     public void close() throws SQLException {
-
         if (connection != null && !connection.isClosed()) {
             connection.close();
         }

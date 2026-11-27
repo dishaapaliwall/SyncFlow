@@ -1,13 +1,12 @@
-
 package com.syncflow.controller;
 
+import com.syncflow.event.ChangeEvent;
 import com.syncflow.monitoring.LagMonitor;
 import com.syncflow.monitoring.ProgressTracker;
 import com.syncflow.service.SyncService;
 import org.springframework.web.bind.annotation.*;
-import com.syncflow.event.ChangeEvent;
-import java.util.List;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
