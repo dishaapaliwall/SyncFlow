@@ -31,9 +31,9 @@
 ## 2. System Architecture
 
 ```
-                    SOURCE DATABASE (PostgreSQL 18)
-                        │ (WAL / Write-Ahead Log)
-                        ▼
+             SOURCE DATABASE (PostgreSQL 18)
+                            │ (WAL / Write-Ahead Log)
+                            ▼
             ┌───────────────────────────────┐
             │ Logical Replication (pgoutput)│
             └───────────────┬───────────────┘
